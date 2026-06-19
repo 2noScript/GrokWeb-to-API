@@ -1,26 +1,86 @@
-import requests
 import json
-import time
 import logging
+import os
 import re
+import uuid
+from pathlib import Path
 
-# Set up logging
+import requests
+
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+
+def _load_cookies_from_file(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            cookies = json.load(f)
+        if isinstance(cookies, list):
+            return {c.get("name", ""): c.get("value", "") for c in cookies if c.get("name")}
+        if isinstance(cookies, dict):
+            return cookies
+    except Exception:
+        pass
+    return None
+
+
 class GrokClient:
-    def __init__(self, cookies):
+    def __init__(self, cookies=None):
         """
-        Initialize the Grok client with cookie values
+        Initialize the Grok client with cookie values.
 
         Args:
-            cookies (dict): Dictionary containing cookie values
-                - sso
-                - sso-rw
+            cookies (dict, optional): Dictionary containing cookie values.
+                If not provided, will try to load from:
+                  - env: GROK_COOKIES_JSON
+                  - file: grok_cookies.json next to this script
+                  - env: GROK_SSO / GROK_SSO_RW (legacy)
         """
-        self.base_url = "https://grok.com/rest/app-chat/conversations/new"
-        
-        # Convert cookie string to dict if needed
+        self.base_url = "https://grok.com/rest/app-chat"
+        cookies_dir = Path(__file__).resolve().parent.parent / "cookies"
+        env_json = os.getenv("GROK_COOKIES_JSON")
+        cookie_file = os.path.join(cookies_dir, "grok_cookies.json")
+
+        if not cookies:
+            cookies = _load_cookies_from_file(env_json or cookie_file)
+
+        if not cookies:
+            load_dotenv = None
+            try:
+                from dotenv import load_dotenv as _ld
+                load_dotenv = _ld
+            except Exception:
+                pass
+            if load_dotenv:
+                load_dotenv()
+
+            sso = os.getenv("GROK_SSO")
+            sso_rw = os.getenv("GROK_SSO_RW")
+            if sso and sso_rw:
+                cookies = {"sso": sso, "sso-rw": sso_rw}
+
+        self.proxies = None
+        proxy_url = os.getenv("PROXY_URL")
+        if proxy_url:
+            proxy_username = os.getenv("PROXY_USERNAME")
+            proxy_password = os.getenv("PROXY_PASSWORD")
+            if proxy_username and proxy_password:
+                if "://" in proxy_url:
+                    scheme, rest = proxy_url.split("://", 1)
+                    proxy_url = f"{scheme}://{proxy_username}:{proxy_password}@{rest}"
+
+            no_proxy = os.getenv("NO_PROXY", "")
+            target_host = self.base_url.split("://", 1)[-1].split("/", 1)[0]
+            if any(target_host.endswith(host.strip()) for host in no_proxy.split(",") if host.strip()):
+                self.proxies = None
+            else:
+                self.proxies = {
+                    "http": proxy_url,
+                    "https": proxy_url,
+                }
+
         if isinstance(cookies.get('Cookie'), str):
             cookie_dict = {}
             for cookie in cookies.get('Cookie', '').split(';'):
@@ -30,9 +90,9 @@ class GrokClient:
             self.cookies = cookie_dict
         else:
             self.cookies = cookies
-            
+
         logger.debug(f"Using cookies: {self.cookies}")
-        
+
         self.headers = {
             "accept": "*/*",
             "accept-language": "en-GB,en;q=0.9",
@@ -51,7 +111,12 @@ class GrokClient:
         }
         logger.debug(f"Initialized GrokClient with headers: {self.headers}")
 
-    def _prepare_payload(self, message):
+    @staticmethod
+    def _prepare_payload(
+            message,
+            temperature: float | None = None,
+            max_tokens: int | None = None,
+    ):
         """Prepare the default payload with the user's message"""
         payload = {
             "temporary": False,
@@ -72,22 +137,26 @@ class GrokClient:
             "sendFinalMetadata": True,
             "customInstructions": "",
             "deepsearchPreset": "",
-            "isReasoning": False
+            "isReasoning": False,
         }
+
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
         logger.debug(f"Prepared payload: {payload}")
         return payload
 
-    def _clean_json_response(self, response):
+    @staticmethod
+    def _clean_json_response(response):
         """Clean up JSON response by removing markdown and code blocks"""
-        # Remove markdown code blocks
         response = re.sub(r'```json\s*', '', response)
         response = re.sub(r'```\s*$', '', response)
-        
+
         try:
-            # Try to parse as JSON
             json_data = json.loads(response)
-            
-            # If the response has a nested response or function_call, extract it
+
             if isinstance(json_data, dict):
                 if "response" in json_data:
                     json_data = json_data["response"]
@@ -95,42 +164,59 @@ class GrokClient:
                     json_data = json_data["function_call"]["arguments"]
                     if isinstance(json_data, str):
                         json_data = json.loads(json_data)
-            
+
             return json.dumps(json_data, indent=2)
         except json.JSONDecodeError:
             return response
 
-    def send_message(self, message):
+    def send_message(self, message, temperature=None, max_tokens=None):
         """
         Send a message to Grok and collect the streaming response
 
         Args:
             message (str): The user's input message
+            temperature (float, optional): Sampling temperature
+            max_tokens (int, optional): Maximum tokens to generate
 
         Returns:
             str: The complete response from Grok
         """
         try:
             logger.debug(f"Sending message to Grok: {message}")
-            payload = self._prepare_payload(message)
-            
-            logger.debug(f"Making POST request to {self.base_url}")
+            payload = self._prepare_payload(message, temperature, max_tokens)
+
+            conversation_id = str(uuid.uuid4())
+            url = f"{self.base_url}/conversations/{conversation_id}"
+
+            logger.debug(f"Making POST request to {url}")
             logger.debug(f"Using cookies: {self.cookies}")
-            
+
             session = requests.Session()
             for cookie_name, cookie_value in self.cookies.items():
                 session.cookies.set(cookie_name, cookie_value)
-            
+
             response = session.post(
-                self.base_url,
+                url,
                 headers=self.headers,
                 json=payload,
-                stream=True
+                stream=True,
+                proxies=self.proxies,
             )
-            
+
             logger.debug(f"Response status code: {response.status_code}")
-            response.raise_for_status()  # Raise an exception for bad status codes
-            
+            if response.status_code == 404:
+                logger.debug("Primary endpoint returned 404, trying fallback /new endpoint")
+                fallback_url = "https://grok.com/rest/app-chat/conversations/new"
+                response = session.post(
+                    fallback_url,
+                    headers=self.headers,
+                    json=payload,
+                    stream=True,
+                    proxies=self.proxies,
+                )
+                logger.debug(f"Fallback response status code: {response.status_code}")
+            response.raise_for_status()
+
             full_response = ""
             last_response = None
 
@@ -140,58 +226,50 @@ class GrokClient:
                     try:
                         decoded_line = line.decode('utf-8')
                         logger.debug(f"Received line: {decoded_line}")
-                        
+
                         json_data = json.loads(decoded_line)
                         logger.debug(f"Parsed JSON: {json_data}")
-                        
-                        # Check for error in response
+
                         if "error" in json_data:
                             error_msg = json_data["error"]
                             logger.error(f"Error in response: {error_msg}")
                             raise Exception(error_msg)
-                        
+
                         result = json_data.get("result", {})
                         response_data = result.get("response", {})
                         logger.debug(f"Response data: {response_data}")
 
-                        # Check for complete response
                         if "modelResponse" in response_data:
                             complete_response = response_data["modelResponse"].get("message", "")
                             if complete_response:
                                 logger.debug(f"Got complete response: {complete_response}")
                                 return self._clean_json_response(complete_response)
-                            
-                        # Collect streaming tokens
+
                         token = response_data.get("token", "")
                         if token:
                             full_response += token
-                            last_response = full_response  # Keep track of last valid response
+                            last_response = full_response
                             logger.debug(f"Current response: {full_response}")
-                            
+
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to decode JSON: {e}")
                         continue
                     except Exception as e:
                         logger.error(f"Error processing response line: {e}")
-                        if str(e):  # If we have an error message
+                        if str(e):
                             raise Exception(f"Error in response: {str(e)}")
                         continue
 
-            # Return the last valid response if we have one
             if last_response:
                 logger.debug(f"Returning last valid response: {last_response.strip()}")
                 return self._clean_json_response(last_response.strip())
-            
-            # If we got here without a response, raise an exception
+
             logger.error("No valid response received from Grok API")
             raise Exception("No valid response received from Grok API")
-            
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Request failed: {e}")
             raise Exception(f"Request failed: {str(e)}")
         except Exception as e:
             logger.error(f"Failed to process response: {e}")
             raise Exception(f"Failed to process response: {str(e)}")
-
-        logger.warning("Returning empty response as fallback")
-        return ""  # Fallback empty response

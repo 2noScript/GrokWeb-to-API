@@ -1,4 +1,7 @@
-from .client import GrokClient
+from importlib.metadata import version
 
-__version__ = "0.1.0"
-__all__ = ['GrokClient']
+from .client import GrokClient
+from .grok_openai_client import GrokOpenAIClient
+
+__version__ = version("GrokWeb-to-API")
+__all__ = ["GrokClient", "GrokOpenAIClient"]
