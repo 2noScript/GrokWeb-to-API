@@ -36,13 +36,13 @@ def setup_client(args: argparse.Namespace) -> GrokOpenAIClient:
     sso = args.sso or os.getenv("GROK_SSO")
     sso_rw = args.sso_rw or os.getenv("GROK_SSO_RW")
 
-    cookies = None
+    cookies_str = None
     if sso or sso_rw:
-        cookies = {"sso": sso or "", "sso-rw": sso_rw or ""}
+        cookies_str = f"sso={sso or ''}; sso-rw={sso_rw or ''}"
 
     try:
         return GrokOpenAIClient(
-            cookies=cookies if cookies else None,
+            cookies_str=cookies_str if cookies_str else None,
             model_name=args.model or "grok-3",
         )
     except ValueError as e:

@@ -3,64 +3,22 @@ import logging
 import os
 import re
 import uuid
-from pathlib import Path
 
 import requests
 
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
-def _load_cookies_from_file(path):
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r") as f:
-            cookies = json.load(f)
-        if isinstance(cookies, list):
-            return {c.get("name", ""): c.get("value", "") for c in cookies if c.get("name")}
-        if isinstance(cookies, dict):
-            return cookies
-    except Exception:
-        pass
-    return None
-
-
 class GrokClient:
-    def __init__(self, cookies=None):
+    def __init__(self, cookies_str: str = ""):
         """
-        Initialize the Grok client with cookie values.
+        Initialize the Grok client with a cookie string.
 
         Args:
-            cookies (dict, optional): Dictionary containing cookie values.
-                If not provided, will try to load from:
-                  - env: GROK_COOKIES_JSON
-                  - file: grok_cookies.json next to this script
-                  - env: GROK_SSO / GROK_SSO_RW (legacy)
+            cookies_str: Raw Cookie header string, e.g.
+                "sso=xxx; sso-rw=yyy". If empty, no cookies are set.
         """
         self.base_url = "https://grok.com/rest/app-chat"
-        cookies_dir = Path(__file__).resolve().parent.parent / "cookies"
-        env_json = os.getenv("GROK_COOKIES_JSON")
-        cookie_file = os.path.join(cookies_dir, "grok_cookies.json")
-
-        if not cookies:
-            cookies = _load_cookies_from_file(env_json or cookie_file)
-
-        if not cookies:
-            load_dotenv = None
-            try:
-                from dotenv import load_dotenv as _ld
-                load_dotenv = _ld
-            except Exception:
-                pass
-            if load_dotenv:
-                load_dotenv()
-
-            sso = os.getenv("GROK_SSO")
-            sso_rw = os.getenv("GROK_SSO_RW")
-            if sso and sso_rw:
-                cookies = {"sso": sso, "sso-rw": sso_rw}
-
         self.proxies = None
         proxy_url = os.getenv("PROXY_URL")
         if proxy_url:
@@ -81,18 +39,6 @@ class GrokClient:
                     "https": proxy_url,
                 }
 
-        if isinstance(cookies.get('Cookie'), str):
-            cookie_dict = {}
-            for cookie in cookies.get('Cookie', '').split(';'):
-                if cookie.strip():
-                    name, value = cookie.strip().split('=', 1)
-                    cookie_dict[name.strip()] = value.strip()
-            self.cookies = cookie_dict
-        else:
-            self.cookies = cookies
-
-        logger.debug(f"Using cookies: {self.cookies}")
-
         self.headers = {
             "accept": "*/*",
             "accept-language": "en-GB,en;q=0.9",
@@ -107,7 +53,8 @@ class GrokClient:
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "same-origin",
             "sec-gpc": "1",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Cookie": cookies_str,
         }
         logger.debug(f"Initialized GrokClient with headers: {self.headers}")
 
@@ -189,13 +136,8 @@ class GrokClient:
             url = f"{self.base_url}/conversations/{conversation_id}"
 
             logger.debug(f"Making POST request to {url}")
-            logger.debug(f"Using cookies: {self.cookies}")
 
-            session = requests.Session()
-            for cookie_name, cookie_value in self.cookies.items():
-                session.cookies.set(cookie_name, cookie_value)
-
-            response = session.post(
+            response = requests.post(
                 url,
                 headers=self.headers,
                 json=payload,
@@ -207,7 +149,7 @@ class GrokClient:
             if response.status_code == 404:
                 logger.debug("Primary endpoint returned 404, trying fallback /new endpoint")
                 fallback_url = "https://grok.com/rest/app-chat/conversations/new"
-                response = session.post(
+                response = requests.post(
                     fallback_url,
                     headers=self.headers,
                     json=payload,

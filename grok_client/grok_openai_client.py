@@ -72,11 +72,11 @@ class GrokOpenAIClient:
 
     def __init__(
             self,
-            cookies: dict[str, str] | None = None,
+            cookies_str: str | None = None,
             model_name: str = "grok-3",
     ):
         self.model_name = model_name
-        self._client = GrokClient(cookies if cookies is not None else {})
+        self._client = GrokClient(cookies_str or "")
 
     @overload
     def chat_completion(

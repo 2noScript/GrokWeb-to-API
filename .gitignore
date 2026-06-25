@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+tests/raw
+log_files
+
+
+.DS_Store
+# Vendor git repos (standalone, not submodules)
+deepseek-api/
+Gemini-API/
+notebooklm-py/
+metaai-api/
+GrokWeb-to-API/

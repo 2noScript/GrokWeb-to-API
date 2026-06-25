@@ -18,9 +18,6 @@ dependencies = [
     "requests>=2.34.2",
     "openai>=2.43.0",
     "python-dotenv>=1.2.2",
-    "fastapi>=0.137.2",
-    "undetected-chromedriver>=3.5.5",
-    "selenium>=4.45.0",
 ]
 
 [project.urls]
